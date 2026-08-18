@@ -2,10 +2,11 @@ import os
 import re
 import requests
 import logging
+import uuid
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, InlineQueryResultArticle, InputTextMessageContent, LinkPreviewOptions
 from telegram.constants import ChatAction
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, InlineQueryHandler
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -49,14 +50,24 @@ def extract_repo_info(url: str) -> tuple[str, str] | None:
         return owner, repo
     return None
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send a message when the command /help is issued."""
+    help_text = (
+        "💡 *Understanding these sizes:*\n\n"
+        "• *Snapshot Size:* This is the raw, uncompressed size of the files. This is exactly what you get when you download the repo as a ZIP or do a shallow clone.\n\n"
+        "• *Full Repository Size:* This is how much space the repository (and all its history) takes up on GitHub's servers. GitHub stores this using 'bare packfiles' which are heavily compressed. A standard `git clone` downloads this entire history.\n\n"
+        "(Note: The .zip file itself might appear slightly smaller because it's compressed, but the bot calculates the true, uncompressed size of the code you are getting!)"
+    )
+    await update.message.reply_markdown(help_text)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
     welcome_message = (
         "👋 Hello! I am a GitHub Repo Size Checker bot.\n\n"
-        "Just send me a GitHub repository link (e.g., `https://github.com/torvalds/linux`) "
+        "Just send or paste a GitHub repository link (e.g., \"https://github.com/Kehn-Marv/Repo-Size-checker\") "
         "and I'll tell you its exact size in KB, MB, and GB."
     )
-    await update.message.reply_text(welcome_message)
+    await update.message.reply_text(welcome_message, link_preview_options=LinkPreviewOptions(is_disabled=True))
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle incoming messages and check for GitHub URLs."""
@@ -64,7 +75,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     # Check if there is a github link
     if "github.com/" not in text:
-        await update.message.reply_text("❌ That doesn't look like a GitHub link. Please send a valid GitHub repository URL (e.g., `https://github.com/torvalds/linux`).")
+        await update.message.reply_text(
+            "❌ That doesn't look like a GitHub link. Please send a valid GitHub repository URL (e.g., \"https://github.com/Kehn-Marv/Repo-Size-checker\").",
+            link_preview_options=LinkPreviewOptions(is_disabled=True)
+        )
         return
 
     repo_info = extract_repo_info(text.strip())
@@ -114,10 +128,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
         reply_text += (
             "\n\n---\n"
-            "💡 *Understanding these sizes:*\n\n"
-            "• Snapshot Size: This is the raw, uncompressed size of the files. This is exactly what you get when you download the repo as a ZIP or do a shallow clone.\n\n"
-            "• Full Repository Size: This is how much space the repository (and all its history) takes up on GitHub's servers. GitHub stores this using 'bare packfiles' which are heavily compressed. A standard `git clone` downloads this entire history.\n\n"
-            "(Note: The .zip file itself might appear slightly smaller because it's compressed, but the bot calculates the true, uncompressed size of the code you are getting!)"
+            "💡 *Want to understand these sizes?* Send /help to learn more."
         )
         
         await update.message.reply_markdown(reply_text)
@@ -133,6 +144,78 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.error(f"Error processing URL {text}: {e}")
         await update.message.reply_text("❌ An unexpected error occurred while processing your request. Please try again.")
 
+async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the inline query."""
+    query = update.inline_query.query
+
+    if not query:
+        return
+
+    # Check if there is a github link
+    if "github.com/" not in query:
+        return
+
+    repo_info = extract_repo_info(query.strip())
+    if not repo_info:
+        return
+
+    owner, repo = repo_info
+    
+    api_url = f"https://api.github.com/repos/{owner}/{repo}"
+    
+    try:
+        response = session.get(api_url)
+        response.raise_for_status()
+        data = response.json()
+        
+        size_kb = data.get("size")
+        if size_kb is None:
+            return
+            
+        default_branch = data.get("default_branch", "main")
+        
+        # Calculate snapshot size
+        snapshot_kb = None
+        tree_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{default_branch}?recursive=1"
+        try:
+            tree_response = session.get(tree_url)
+            tree_response.raise_for_status()
+            tree_data = tree_response.json()
+            tree_items = tree_data.get("tree", [])
+            # Sum sizes of all blob objects in bytes, then convert to KB
+            snapshot_bytes = sum(item.get("size", 0) for item in tree_items if item.get("type") == "blob")
+            snapshot_kb = snapshot_bytes / 1024
+        except Exception as e:
+            logger.warning(f"Could not fetch snapshot size for {owner}/{repo}: {e}")
+            
+        reply_text = f"*{owner}/{repo}*\n\n"
+        if snapshot_kb is not None:
+            reply_text += f"📦 *Snapshot Size (ZIP / Shallow Clone)*\n{format_size(snapshot_kb)}\n\n"
+            
+        reply_text += f"📚 *Full Repository Size (Standard Clone)*\n{format_size(size_kb)}"
+        
+        reply_text += (
+            "\n\n---\n"
+            "💡 *Want to understand these sizes?* Send /help to learn more."
+        )
+        
+        results = [
+            InlineQueryResultArticle(
+                id=str(uuid.uuid4()),
+                title=f"Size of {owner}/{repo}",
+                description=f"{size_kb:,.0f} KB | {size_kb/1024:,.2f} MB | {size_kb/1024/1024:,.2f} GB",
+                input_message_content=InputTextMessageContent(
+                    message_text=reply_text,
+                    parse_mode="Markdown"
+                )
+            )
+        ]
+        
+        await update.inline_query.answer(results)
+        
+    except Exception as e:
+        logger.error(f"Error processing inline query {query}: {e}")
+
 import sys
 
 def main() -> None:
@@ -147,7 +230,9 @@ def main() -> None:
     application = Application.builder().token(bot_token).build()
 
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(InlineQueryHandler(inline_query))
 
     # Run the bot until the user presses Ctrl-C
     print("Bot is running! Press Ctrl+C to stop.")
