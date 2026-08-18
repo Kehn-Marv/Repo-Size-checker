@@ -10,6 +10,10 @@
 ![Telegram](https://img.shields.io/badge/Telegram-Bot-2CA5E0?logo=telegram&logoColor=white)
 ![Deployment](https://img.shields.io/badge/Deployed_on-Fly.io-5C3EE8)
 
+<br/>
+
+<img src="RepoSizeCheckerBot.png" alt="Repo Size Checker Bot" width="400"/>
+
 </div>
 
 ---
