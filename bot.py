@@ -108,15 +108,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             
         reply_text = f"*{owner}/{repo}*\n\n"
         if snapshot_kb is not None:
-            reply_text += f"📦 *Snapshot Size (ZIP Download)*\n{format_size(snapshot_kb)}\n\n"
+            reply_text += f"📦 *Snapshot Size (ZIP / Shallow Clone)*\n{format_size(snapshot_kb)}\n\n"
             
-        reply_text += f"📚 *Full Repository Size (with Git history)*\n{format_size(size_kb)}"
+        reply_text += f"📚 *Full Repository Size (Standard Clone)*\n{format_size(size_kb)}"
         
         reply_text += (
             "\n\n---\n"
             "💡 *Understanding these sizes:*\n\n"
-            "• Snapshot Size: This is the raw, uncompressed size of the files you are downloading.\n\n"
-            "• Full Repository Size: This is how much space the repository (and all its history) takes up on GitHub's servers. GitHub stores this using 'bare packfiles' which are heavily compressed.\n\n"
+            "• Snapshot Size: This is the raw, uncompressed size of the files. This is exactly what you get when you download the repo as a ZIP or do a shallow clone.\n\n"
+            "• Full Repository Size: This is how much space the repository (and all its history) takes up on GitHub's servers. GitHub stores this using 'bare packfiles' which are heavily compressed. A standard `git clone` downloads this entire history.\n\n"
             "(Note: The .zip file itself might appear slightly smaller because it's compressed, but the bot calculates the true, uncompressed size of the code you are getting!)"
         )
         
