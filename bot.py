@@ -6,6 +6,13 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# Configure requests session with automatic retries for 504 errors
+session = requests.Session()
+retry = Retry(total=3, backoff_factor=1, status_forcelist=[502, 503, 504])
+session.mount('https://', HTTPAdapter(max_retries=retry))
 
 # Load environment variables
 load_dotenv()
@@ -23,10 +30,9 @@ def format_size(size_kb: int) -> str:
     size_gb = size_mb / 1024
     
     return (
-        f"📦 **Repository Size**\n\n"
-        f"• **{size_kb:,} KB**\n"
-        f"• **{size_mb:,.2f} MB**\n"
-        f"• **{size_gb:,.2f} GB**"
+        f"• *{size_kb:,.0f} KB*\n"
+        f"• *{size_mb:,.2f} MB*\n"
+        f"• *{size_gb:,.2f} GB*"
     )
 
 def extract_repo_info(url: str) -> tuple[str, str] | None:
@@ -75,7 +81,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     api_url = f"https://api.github.com/repos/{owner}/{repo}"
     
     try:
-        response = requests.get(api_url)
+        response = session.get(api_url)
         response.raise_for_status()
         data = response.json()
         
@@ -84,7 +90,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await update.message.reply_text("❌ The repository exists, but its size is not available.")
             return
             
-        reply_text = f"**{owner}/{repo}**\n\n{format_size(size_kb)}"
+        default_branch = data.get("default_branch", "main")
+        
+        # Calculate snapshot size
+        snapshot_kb = None
+        tree_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{default_branch}?recursive=1"
+        try:
+            tree_response = session.get(tree_url)
+            tree_response.raise_for_status()
+            tree_data = tree_response.json()
+            tree_items = tree_data.get("tree", [])
+            # Sum sizes of all blob objects in bytes, then convert to KB
+            snapshot_bytes = sum(item.get("size", 0) for item in tree_items if item.get("type") == "blob")
+            snapshot_kb = snapshot_bytes / 1024
+        except Exception as e:
+            logger.warning(f"Could not fetch snapshot size for {owner}/{repo}: {e}")
+            
+        reply_text = f"*{owner}/{repo}*\n\n"
+        if snapshot_kb is not None:
+            reply_text += f"📦 *Snapshot Size (ZIP Download)*\n{format_size(snapshot_kb)}\n\n"
+            
+        reply_text += f"📚 *Full Repository Size (with Git history)*\n{format_size(size_kb)}"
+        
+        reply_text += (
+            "\n\n---\n"
+            "💡 *Understanding these sizes:*\n\n"
+            "• Snapshot Size: This is the raw, uncompressed size of the files you are downloading.\n\n"
+            "• Full Repository Size: This is how much space the repository (and all its history) takes up on GitHub's servers. GitHub stores this using 'bare packfiles' which are heavily compressed.\n\n"
+            "(Note: The .zip file itself might appear slightly smaller because it's compressed, but the bot calculates the true, uncompressed size of the code you are getting!)"
+        )
+        
         await update.message.reply_markdown(reply_text)
         
     except requests.exceptions.HTTPError as e:
